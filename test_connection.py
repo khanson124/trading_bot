@@ -13,3 +13,6 @@ client = TradingClient(
 account = client.get_account()
 print("Account status:", account.status)
 print("Buying power:", account.buying_power)
+
+
+
