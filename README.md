@@ -42,20 +42,21 @@ That's it.
 
 ## Files To Know
 
-| What | Where | Action |
-|------|-------|--------|
-| **Main bot** | `trading_bot.py` | `python3 trading_bot.py` |
-| **Configuration** | `config.py` | Edit to tune strategy |
-| **Results** | `trading_summary.py` | `python3 trading_summary.py` |
-| **Full guide** | `COMPLETE_GUIDE.md` | Read for deep dive |
-| **API setup** | `README_TRADING_BOT.md` | Read for Alpaca setup |
-| **Trade journal** | `TRADING_JOURNAL.md` | Fill out daily |
+| What              | Where                   | Action                       |
+| ----------------- | ----------------------- | ---------------------------- |
+| **Main bot**      | `trading_bot.py`        | `python3 trading_bot.py`     |
+| **Configuration** | `config.py`             | Edit to tune strategy        |
+| **Results**       | `trading_summary.py`    | `python3 trading_summary.py` |
+| **Full guide**    | `COMPLETE_GUIDE.md`     | Read for deep dive           |
+| **API setup**     | `README_TRADING_BOT.md` | Read for Alpaca setup        |
+| **Trade journal** | `TRADING_JOURNAL.md`    | Fill out daily               |
 
 ---
 
 ## Setup (5 minutes)
 
 ### 1. Create `.env` file
+
 ```
 ALPACA_API_KEY=your_key_here
 ALPACA_SECRET_KEY=your_secret_here
@@ -64,16 +65,19 @@ ALPACA_SECRET_KEY=your_secret_here
 Get from [Alpaca Dashboard](https://app.alpaca.markets)
 
 ### 2. Install dependencies
+
 ```bash
 pip install alpaca-py python-dotenv pandas
 ```
 
 ### 3. Verify it works
+
 ```bash
 python3 test_connection.py
 ```
 
 Expected output:
+
 ```
 Account status: AccountStatus.ACTIVE
 Buying power: 200000
@@ -84,6 +88,7 @@ Buying power: 200000
 ## Run the Bot
 
 ### Paper Trading (RECOMMENDED)
+
 ```bash
 python3 trading_bot.py
 ```
@@ -91,7 +96,9 @@ python3 trading_bot.py
 Bot runs **9:30-10:30 AM EST weekdays only**. No real money at risk.
 
 ### Live Trading (After 5+ days of paper trading)
+
 Edit `trading_bot.py`:
+
 ```python
 bot = DayTradingBot(starting_capital=40.0, paper=False)  # Change to False
 ```
@@ -101,6 +108,7 @@ bot = DayTradingBot(starting_capital=40.0, paper=False)  # Change to False
 ## Expected Results
 
 Good day:
+
 ```
 Daily P&L: +$3.50 (+8.75%)
 Trades: 1 winner (+8.75%)
@@ -108,6 +116,7 @@ Capital: $43.50
 ```
 
 Bad day:
+
 ```
 Daily P&L: -$2.00 (-5.00%)
 Trades: 1 loser (-5%) → STOP (kill switch)
@@ -127,6 +136,7 @@ Bot **automatically stops** when:
 3. **-8% daily loss** → Stop trading for day
 
 Example:
+
 ```
 9:40 AM: Enter trade 1 → +8% → Close winner ✅
 9:50 AM: Enter trade 2 → -5% → Close loser ❌
@@ -141,12 +151,15 @@ This is **not a bug**—it's how you survive.
 ## Three Files To Monitor
 
 ### 1. `trades.json` (Auto-generated)
+
 All closed trades. Review for patterns.
 
 ### 2. `TRADING_JOURNAL.md` (You fill out)
+
 Your thoughts, observations, lessons learned.
 
 ### 3. `config.py` (You edit)
+
 Strategy parameters. Adjust if needed.
 
 ---
@@ -174,6 +187,7 @@ After market (After 4 PM):
 ## Is This Real?
 
 Yes. Every component is production code:
+
 - ✅ Real Alpaca API integration
 - ✅ Real risk management logic
 - ✅ Real trade execution
@@ -190,11 +204,13 @@ The strategy (opening range breakout) is one of the few that actually works for 
 Honest answer:
 
 **Maybe.** It depends on:
+
 - ✅ Market conditions (need gap-ups most days)
 - ✅ Your discipline (following all rules)
 - ✅ Luck (variance is real)
 
 **Realistic scenario:**
+
 - 10 trading days
 - 1 good trade/day
 - Average +8% winners, -5% losers
@@ -202,6 +218,7 @@ Honest answer:
 - **Result: +15-25% ($40 → $50-55)**
 
 To reach $100 (150% gain):
+
 - Need several 12%+ winners in a row
 - OR 70%+ win rate (hard)
 - OR trade for 3+ weeks
@@ -232,22 +249,27 @@ A: Bot stops entering new trades. Holds any open positions until stop/target hit
 ## Troubleshooting
 
 ### Bot won't start
+
 ```bash
 python3 diagnostics.py
 ```
+
 Shows what's wrong.
 
 ### No trades enter
+
 - Is market open? (weekday, 9:30-16:00 EST)
 - Are there gap-ups? (check news/scanner)
 - Increase GAP_UP_MIN_PCT from 0.03 to 0.02
 
 ### Getting stopped out too much
+
 - Opening range too tight? (normal on calm days)
 - Widen stop in config.py
 - Run `python3 backtester.py` to test
 
 ### Can't authenticate
+
 - Check `.env` file exists
 - Verify API key is correct
 - Run `python3 test_connection.py`
@@ -280,16 +302,19 @@ Trading_Bot/
 ## Next Steps
 
 1. **Now:**
+
    ```bash
    python3 diagnostics.py
    ```
 
 2. **Tomorrow (before 9:30 AM EST):**
+
    ```bash
    python3 trading_bot.py
    ```
 
 3. **After market close:**
+
    ```bash
    python3 trading_summary.py
    ```
