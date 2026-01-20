@@ -71,6 +71,7 @@ def backtest_symbol(df: pd.DataFrame, symbol: str, starting_capital: float = 40.
                             entry_price=entry_price,
                             stop_loss=levels["stop_loss"],
                             take_profit=levels["take_profit_conservative"],
+                            entry_time=row["time"],
                         )
             
             # Step 3: Check for exit
@@ -87,6 +88,7 @@ def backtest_symbol(df: pd.DataFrame, symbol: str, starting_capital: float = 40.
                         open_position,
                         exit_price=exit_check["exit_price"],
                         reason=exit_check["reason"],
+                        exit_time=row["time"],
                     )
                     open_position = None
         
@@ -97,6 +99,7 @@ def backtest_symbol(df: pd.DataFrame, symbol: str, starting_capital: float = 40.
                 open_position,
                 exit_price=last_close,
                 reason="End of day",
+                exit_time=day_df.iloc[-1]["time"],
             )
             open_position = None
     
@@ -116,13 +119,15 @@ def backtest_symbol(df: pd.DataFrame, symbol: str, starting_capital: float = 40.
     avg_win = sum(t.pnl for t in wins) / len(wins) if wins else 0
     avg_loss = sum(t.pnl for t in losses) / len(losses) if losses else 0
     
+    total_pnl = position_manager.current_capital - starting_capital
+    
     return {
         "symbol": symbol,
         "total_trades": len(trades),
         "winning_trades": len(wins),
         "losing_trades": len(losses),
-        "total_pnl": position_manager.daily_pnl,
-        "total_pnl_pct": (position_manager.daily_pnl / starting_capital) * 100,
+        "total_pnl": total_pnl,
+        "total_pnl_pct": (total_pnl / starting_capital) * 100,
         "win_rate": (len(wins) / len(trades) * 100) if trades else 0,
         "avg_win": avg_win,
         "avg_loss": avg_loss,

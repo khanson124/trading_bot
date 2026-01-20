@@ -1,15 +1,11 @@
 """
 Stock scanner: find high-volume, liquid stocks ready for opening range breakout.
-Uses a fixed liquid watchlist instead of premarket gap detection.
+Uses a fixed liquid watchlist and 1-minute open gap detection.
 """
 import os
-import pandas as pd
-from alpaca.trading.client import TradingClient
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-from alpaca.data.enums import DataFeed
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from intraday_data import IntradayDataClient
 
 
 class StockScanner:
@@ -22,27 +18,13 @@ class StockScanner:
     ]
     
     def __init__(self):
-        self.trading_client = TradingClient(
-            api_key=os.getenv("ALPACA_API_KEY"),
-            secret_key=os.getenv("ALPACA_SECRET_KEY"),
-            paper=True,
-        )
-        self.data_client = StockHistoricalDataClient(
-            api_key=os.getenv("ALPACA_API_KEY"),
-            secret_key=os.getenv("ALPACA_SECRET_KEY"),
-        )
+        self.data_client = IntradayDataClient()
 
-    def get_asset_list(self) -> list:
-        """Get all tradable assets from Alpaca."""
-        assets = self.trading_client.get_all_assets()
-        # Filter: stocks only, tradable
-        return [a for a in assets if a.tradable and a.asset_class == "us_equity"]
-
-    def calculate_daily_gap(self, symbol: str) -> dict:
+    def calculate_open_gap(self, symbol: str) -> dict:
         """
-        Calculate gap from yesterday's close to today's open.
-        Note: Uses daily bars which show today's open after market opens.
-        For true premarket gaps, would need premarket data source.
+        Calculate opening gap using 1-minute bars.
+        Gap = (today's first 1-min open - yesterday's last close) / yesterday's close
+        This is more consistent and tradable than daily bars.
         
         Returns: {
             "symbol": str,
@@ -52,43 +34,13 @@ class StockScanner:
         }
         """
         try:
-            end = datetime.now(timezone.utc)
-            start = end - timedelta(days=10)
-
-            req = StockBarsRequest(
-                symbol_or_symbols=[symbol],
-                timeframe=TimeFrame.Day,
-                start=start,
-                end=end,
-                feed=DataFeed.SIP,
-            )
-
-            bars = self.data_client.get_stock_bars(req)
-            
-            if symbol not in bars.data or len(bars.data[symbol]) < 2:
-                return {"symbol": symbol, "gap_pct": 0.0, "prev_close": 0.0, "today_open": 0.0}
-
-            bar_list = bars.data[symbol]
-            
-            # Last bar is today's (may be incomplete)
-            # Previous bar is yesterday's close
-            if len(bar_list) >= 2:
-                prev_close = float(bar_list[-2].close)
-                today_open = float(bar_list[-1].open)
-                
-                if prev_close > 0:
-                    gap_pct = (today_open - prev_close) / prev_close
-                else:
-                    gap_pct = 0.0
-                
-                return {
-                    "symbol": symbol,
-                    "gap_pct": gap_pct,
-                    "prev_close": prev_close,
-                    "today_open": today_open,
-                }
-            
-            return {"symbol": symbol, "gap_pct": 0.0, "prev_close": 0.0, "today_open": 0.0}
+            gap_info = self.data_client.get_premarket_data(symbol)
+            return {
+                "symbol": symbol,
+                "gap_pct": gap_info.get("gap_pct", 0.0),
+                "prev_close": gap_info.get("prev_close", 0.0),
+                "today_open": gap_info.get("today_open", 0.0),
+            }
         except Exception as e:
             print(f"Error calculating gap for {symbol}: {e}")
             return {"symbol": symbol, "gap_pct": 0.0, "prev_close": 0.0, "today_open": 0.0}
@@ -98,25 +50,28 @@ class StockScanner:
                                      limit: int = 20) -> list:
         """
         Scan liquid watchlist for stocks ready for opening range breakout.
+        Filters by minimum gap percentage.
         
         Returns: list of dicts with symbol, gap info
         """
         candidates = []
         
-        print(f"Scanning {len(self.LIQUID_WATCHLIST)} liquid symbols for gaps...")
+        print(f"Scanning {len(self.LIQUID_WATCHLIST)} liquid symbols for gaps >= {min_gap*100:.2f}%...")
         
         for symbol in self.LIQUID_WATCHLIST:
             try:
-                gap_info = self.calculate_daily_gap(symbol)
+                gap_info = self.calculate_open_gap(symbol)
                 gap_pct = gap_info["gap_pct"]
                 
-                # Include all symbols from watchlist (filter by gap if needed)
-                # You can adjust min_gap to filter more strictly
-                candidates.append({
-                    "symbol": symbol,
-                    "gap_pct": gap_pct,
-                    "gap_display": f"{gap_pct*100:+.2f}%",
-                })
+                # Only include if gap meets threshold
+                if abs(gap_pct) >= min_gap:
+                    candidates.append({
+                        "symbol": symbol,
+                        "gap_pct": gap_pct,
+                        "gap_display": f"{gap_pct*100:+.2f}%",
+                        "prev_close": gap_info["prev_close"],
+                        "today_open": gap_info["today_open"],
+                    })
                     
             except Exception as e:
                 print(f"Error processing {symbol}: {e}")
@@ -125,7 +80,7 @@ class StockScanner:
         # Sort by gap % descending
         candidates.sort(key=lambda x: x["gap_pct"], reverse=True)
         
-        print(f"Candidates (showing all {len(candidates)}):")
+        print(f"Found {len(candidates)} candidates with gap >= {min_gap*100:.2f}%")
         for c in candidates[:10]:
             print(f"  {c['symbol']}: {c['gap_display']}")
         

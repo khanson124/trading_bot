@@ -59,6 +59,7 @@ class PositionManager:
     def __init__(self, starting_capital: float = 40.0):
         self.starting_capital = starting_capital
         self.current_capital = starting_capital
+        self.day_start_capital = starting_capital
         self.open_trades: List[Trade] = []
         self.closed_trades: List[Trade] = []
         
@@ -70,12 +71,14 @@ class PositionManager:
         self.MAX_TRADES_PER_DAY = 2
         self.MAX_DAILY_LOSS_PCT = -0.08
         self.POSITION_SIZE_PCT = 0.8  # Use 80% of capital per trade
+        self.RISK_PER_TRADE_PCT = 0.02  # Risk 2% per trade
     
     def reset_daily_limits(self):
         """Reset daily counters (call at market open)."""
         self.trades_today = 0
         self.losing_trade_hit = False
         self.daily_pnl = 0.0
+        self.day_start_capital = self.current_capital  # Set daily baseline
     
     def can_open_trade(self) -> tuple[bool, str]:
         """
@@ -90,8 +93,8 @@ class PositionManager:
         if self.losing_trade_hit:
             return False, "Stopped after losing trade"
         
-        # Kill switch 3: Max daily loss
-        daily_loss_pct = self.daily_pnl / self.starting_capital
+        # Kill switch 3: Max daily loss (based on day start capital)
+        daily_loss_pct = self.daily_pnl / self.day_start_capital
         if daily_loss_pct <= self.MAX_DAILY_LOSS_PCT:
             return False, f"Max daily loss (-8%) reached: {daily_loss_pct*100:.2f}%"
         
@@ -102,35 +105,49 @@ class PositionManager:
         Calculate position size based on risk management.
         Risk per trade = entry_price - stop_loss
         Size = (account_risk_$) / (risk_per_share)
+        Capped by max notional exposure.
         """
         risk_per_share = entry_price - stop_loss
         if risk_per_share <= 0:
             return 0
         
-        # Risk max 2% per trade on $40 account = $0.80
-        account_risk = self.current_capital * 0.02
-        position_size = account_risk / risk_per_share
+        # Risk 2% per trade
+        account_risk = self.current_capital * self.RISK_PER_TRADE_PCT
+        qty = account_risk / risk_per_share
         
-        return position_size
+        # Cap notional exposure to 80% of capital
+        max_notional = self.current_capital * self.POSITION_SIZE_PCT
+        max_qty = max_notional / entry_price
+        qty = min(qty, max_qty)
+        
+        return max(qty, 0)
     
     def open_trade(self, symbol: str, entry_price: float, 
-                   stop_loss: float, take_profit: float) -> Trade:
+                   stop_loss: float, take_profit: float,
+                   entry_time: datetime) -> Trade:
         """
         Open a new trade.
+        
+        Args:
+            symbol: Stock symbol
+            entry_price: Entry price
+            stop_loss: Stop loss price
+            take_profit: Take profit price
+            entry_time: Timestamp of entry candle
         """
         can_trade, reason = self.can_open_trade()
         if not can_trade:
             raise ValueError(f"Cannot open trade: {reason}")
         
-        position_size = self.calculate_position_size(entry_price, stop_loss)
-        if position_size <= 0:
+        qty = self.calculate_position_size(entry_price, stop_loss)
+        if qty <= 0:
             raise ValueError("Position size <= 0")
         
         trade = Trade(
             symbol=symbol,
             entry_price=entry_price,
-            entry_time=datetime.now(timezone.utc),
-            quantity=position_size,
+            entry_time=entry_time,
+            quantity=qty,
             stop_loss=stop_loss,
             take_profit=take_profit,
         )
@@ -140,11 +157,17 @@ class PositionManager:
         
         return trade
     
-    def close_trade(self, trade: Trade, exit_price: float, reason: str):
+    def close_trade(self, trade: Trade, exit_price: float, reason: str, exit_time: datetime):
         """
         Close an open trade.
+        
+        Args:
+            trade: Trade to close
+            exit_price: Exit price
+            reason: Exit reason
+            exit_time: Timestamp of exit candle
         """
-        trade.close(exit_price, datetime.now(timezone.utc), reason)
+        trade.close(exit_price, exit_time, reason)
         
         self.open_trades.remove(trade)
         self.closed_trades.append(trade)
@@ -171,7 +194,7 @@ class PositionManager:
         return {
             "capital": self.current_capital,
             "daily_pnl": self.daily_pnl,
-            "daily_pnl_pct": (self.daily_pnl / self.starting_capital) * 100,
+            "daily_pnl_pct": (self.daily_pnl / self.day_start_capital) * 100,
             "trades_today": self.trades_today,
             "losing_trade_hit": self.losing_trade_hit,
             "open_trades": len(self.open_trades),
@@ -199,12 +222,13 @@ if __name__ == "__main__":
         symbol="AAPL",
         entry_price=100.0,
         stop_loss=95.0,
-        take_profit=108.0
+        take_profit=108.0,
+        entry_time=datetime.now(timezone.utc)
     )
     print(f"✓ Opened {trade.symbol}: {trade.quantity} shares at ${trade.entry_price}")
     
     # Close it with profit
-    pm.close_trade(trade, exit_price=108.0, reason="Take profit")
+    pm.close_trade(trade, exit_price=108.0, reason="Take profit", exit_time=datetime.now(timezone.utc))
     
     # Check summary
     print(f"\nDaily summary: {pm.get_daily_summary()}")

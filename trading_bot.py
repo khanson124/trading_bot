@@ -3,9 +3,10 @@ Main trading bot: orchestrates scanner, strategy, and position management.
 """
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+import pandas as pd
 
 from intraday_data import IntradayDataClient
 from stock_scanner import StockScanner
@@ -21,9 +22,10 @@ load_dotenv()
 class DayTradingBot:
     """
     Opening Range Breakout bot.
-    - Scans for gap-up stocks 9:30-10:30 EST
-    - Enters on breakout above opening range high
+    - Scans for gap-up stocks at market open
+    - Enters on breakout above opening range high (9:35-10:30 EST only)
     - Manages stops/targets with risk controls
+    - Max 1 trade at a time (recommended for small $40 account)
     """
     
     def __init__(self, starting_capital: float = 40.0, paper: bool = True):
@@ -87,14 +89,19 @@ class DayTradingBot:
             print(f"  Error scanning: {e}")
             return []
     
-    def monitor_symbol(self, symbol: str) -> bool:
+    def monitor_symbol(self, symbol: str, df: pd.DataFrame = None) -> bool:
         """
         Monitor one symbol for opening range breakout.
         Returns: True if trade was entered
+        
+        Args:
+            symbol: Stock symbol to monitor
+            df: Optional cached DataFrame (1-min bars)
         """
         try:
-            # Fetch latest 1-min bars
-            df = self.data_client.get_1min_bars(symbol, days_back=1)
+            # Use provided df or fetch new one
+            if df is None or df.empty:
+                df = self.data_client.get_1min_bars(symbol, days_back=1)
             
             if df.empty:
                 return False
@@ -116,7 +123,11 @@ class DayTradingBot:
             breakout_result = strategy.check_breakout(last_bar)
             
             if breakout_result["signal"] == "LONG_BREAKOUT":
-                # Check if we already have a position
+                # Check if we already have ANY open position (one-at-a-time for $40 account)
+                if len(self.position_manager.open_trades) > 0:
+                    return False
+                
+                # Check if we already have a position in this symbol
                 existing = self.position_manager.get_open_position(symbol)
                 if existing:
                     return False
@@ -136,6 +147,7 @@ class DayTradingBot:
                     entry_price=entry_price,
                     stop_loss=levels["stop_loss"],
                     take_profit=levels["take_profit_conservative"],
+                    entry_time=last_bar["time"],
                 )
                 
                 print(f"\n✅ LONG {symbol} @ ${entry_price:.2f} | "
@@ -154,23 +166,36 @@ class DayTradingBot:
             print(f"  Error monitoring {symbol}: {e}")
             return False
     
-    def monitor_open_positions(self):
-        """Check open positions for exits."""
+    def monitor_open_positions(self, df_cache: dict) -> None:
+        """
+        Check open positions for exits.
+        
+        Args:
+            df_cache: Dict of {symbol: df} cached from current loop
+        """
         for trade in list(self.position_manager.open_trades):
             try:
-                df = self.data_client.get_1min_bars(trade.symbol, days_back=1)
+                # Use cached df if available, otherwise fetch
+                if trade.symbol in df_cache:
+                    df = df_cache[trade.symbol]
+                else:
+                    df = self.data_client.get_1min_bars(trade.symbol, days_back=1)
+                    df_cache[trade.symbol] = df
+                
                 if df.empty:
                     continue
                 
                 last_bar = df.iloc[-1]
                 current_price = float(last_bar["close"])
+                exit_time = last_bar["time"]
                 
                 # Simple exit logic: hit SL or TP
                 if current_price <= trade.stop_loss:
                     self.position_manager.close_trade(
                         trade,
                         exit_price=trade.stop_loss,
-                        reason="Stop loss"
+                        reason="Stop loss",
+                        exit_time=exit_time,
                     )
                     # Place sell order
                     if not self.paper:
@@ -180,7 +205,8 @@ class DayTradingBot:
                     self.position_manager.close_trade(
                         trade,
                         exit_price=trade.take_profit,
-                        reason="Take profit"
+                        reason="Take profit",
+                        exit_time=exit_time,
                     )
                     # Place sell order
                     if not self.paper:
@@ -232,12 +258,26 @@ class DayTradingBot:
         while self.is_trading_window():
             loop_count += 1
             
-            # Monitor candidates for breakouts
-            for symbol in candidate_symbols:
-                self.monitor_symbol(symbol)
+            # Cache DataFrames for this loop (reduce API calls)
+            df_cache = {}
             
-            # Monitor open positions for exits
-            self.monitor_open_positions()
+            # Fetch all candidate dfs once
+            # TODO: Optimize to fetch only last ~120 min instead of full day
+            # (Requires modifying IntradayDataClient to support start/end times)
+            for symbol in candidate_symbols:
+                try:
+                    df = self.data_client.get_1min_bars(symbol, days_back=1)
+                    df_cache[symbol] = df
+                except Exception as e:
+                    print(f"  Error fetching {symbol}: {e}")
+            
+            # Monitor candidates for breakouts (using cached dfs)
+            for symbol in candidate_symbols:
+                if symbol in df_cache and self.monitor_symbol(symbol, df=df_cache[symbol]):
+                    break  # Trade entered, stop checking other symbols (one-at-a-time)
+            
+            # Monitor open positions for exits (using cache)
+            self.monitor_open_positions(df_cache)
             
             # Print status every 5 loops
             if loop_count % 5 == 0:
@@ -251,7 +291,7 @@ class DayTradingBot:
                 print(f"[{self.get_est_time_str()}] ⛔ Losing trade hit, stopping")
                 break
             
-            daily_loss_pct = self.position_manager.daily_pnl / self.position_manager.starting_capital
+            daily_loss_pct = self.position_manager.daily_pnl / self.position_manager.day_start_capital
             if daily_loss_pct <= -0.08:
                 print(f"[{self.get_est_time_str()}] ⛔ Max daily loss hit, stopping")
                 break
@@ -266,16 +306,20 @@ class DayTradingBot:
                 df = self.data_client.get_1min_bars(trade.symbol, days_back=1)
                 if not df.empty:
                     current_price = float(df.iloc[-1]["close"])
+                    exit_time = df.iloc[-1]["time"]
                 else:
                     current_price = trade.entry_price  # Fallback
+                    exit_time = datetime.now(timezone.utc)  # Fallback
             except Exception as e:
                 print(f"  Error getting close price for {trade.symbol}: {e}")
                 current_price = trade.entry_price
+                exit_time = datetime.now(timezone.utc)
             
             self.position_manager.close_trade(
                 trade,
                 exit_price=current_price,
-                reason="Market close"
+                reason="Market close",
+                exit_time=exit_time,
             )
         
         # Print final summary

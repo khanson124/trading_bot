@@ -2,7 +2,8 @@
 Opening Range Breakout strategy logic.
 """
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, Optional
 
 
@@ -26,8 +27,8 @@ class OpeningRangeBreakout:
         self.breakout_triggered = False
     
     def get_est_hour(self, dt: datetime) -> float:
-        """Convert UTC datetime to EST hour (float)."""
-        est_tz = timezone(datetime.timedelta(hours=-5))
+        """Convert UTC datetime to America/New_York hour (float) with DST support."""
+        est_tz = ZoneInfo("America/New_York")
         est_dt = dt.astimezone(est_tz)
         return est_dt.hour + est_dt.minute / 60.0
     
@@ -44,11 +45,11 @@ class OpeningRangeBreakout:
         if df.empty:
             return None
         
-        # Filter to 9:30-9:35 EST window
+        # Filter to 9:30-9:35 EST window (strictly before 9:35)
         opening_bars = []
         for _, row in df.iterrows():
             hour = self.get_est_hour(row["time"])
-            if self.MARKET_OPEN_EST <= hour <= self.TRADING_WINDOW_START:
+            if self.MARKET_OPEN_EST <= hour < self.TRADING_WINDOW_START:
                 opening_bars.append(row)
         
         if not opening_bars:
@@ -57,19 +58,22 @@ class OpeningRangeBreakout:
         opening_df = pd.DataFrame(opening_bars)
         high = float(opening_df["high"].max())
         low = float(opening_df["low"].min())
+        avg_volume = float(opening_df["volume"].mean())
         
         self.opening_range = {
             "high": high,
             "low": low,
             "range_width": high - low,
+            "avg_volume": avg_volume,
         }
         
         return self.opening_range
     
-    def check_breakout(self, current_bar: pd.Series, volume_threshold: float = 1.0) -> Optional[Dict]:
+    def check_breakout(self, current_bar: pd.Series, volume_threshold: float = 1.5) -> Optional[Dict]:
         """
         Check if current bar breaks above opening range high on volume.
         Entry price is the close of the breakout bar (realistic fill).
+        Volume must be >= volume_threshold * avg_opening_range_volume to confirm.
         
         Returns: {
             "signal": "LONG_BREAKOUT" | "NO_SETUP",
@@ -88,12 +92,18 @@ class OpeningRangeBreakout:
         # Check if price broke above opening range high
         close = float(current_bar["close"])
         high = float(current_bar["high"])
+        volume = float(current_bar["volume"])
+        
+        # Check volume confirmation
+        min_volume = self.opening_range["avg_volume"] * volume_threshold
+        if volume < min_volume:
+            return {"signal": "NO_SETUP", "entry_price": None, "reason": f"Volume too low ({volume:.0f} < {min_volume:.0f})"}
         
         if high > self.opening_range["high"]:
             return {
                 "signal": "LONG_BREAKOUT",
                 "entry_price": close,  # Entry at breakout bar close (realistic fill)
-                "reason": f"Breakout above range high ${self.opening_range['high']:.2f}, entry at ${close:.2f}",
+                "reason": f"Breakout above range high ${self.opening_range['high']:.2f} on volume, entry at ${close:.2f}",
             }
         
         return {"signal": "NO_SETUP", "entry_price": None, "reason": "No breakout yet"}
